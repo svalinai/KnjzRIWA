@@ -1,153 +1,96 @@
 const express = require("express");
-const bodyParser = require("body-parser");
 const cors = require("cors");
-const mysql = require("mysql");
+const bodyParser = require("body-parser");
+const mysql = require("mysql2");
+
 const app = express();
 const port = 4444;
-require("dotenv").config();
 
-// MySQL veza
-const connection = mysql.createConnection({
-  host: "student.veleri.hr",
-  user: "isvalina",
-  password: "11",
-  database: "isvalina",
-});
-
-connection.connect(function (err) {
-  if (err) throw err;
-  console.log("Connected to the database!");
-});
-
-// Middleware za JSON tijelo zahtjeva
+// Middleware za parsiranje JSON podataka
 app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// CORS omogućen za sve zahtjeve
 app.use(cors());
 
-// Ruta za registraciju korisnika
-app.post("/api/registracija", (request, response) => {
-  const { ime, prezime, korime, lozinka } = request.body;
-
-  console.log("Podaci za registraciju:", { ime, prezime, korime, lozinka });
-
-  // Provjeravamo postoji li već korisničko ime u bazi
-  connection.query(
-    "SELECT * FROM korisnik WHERE korime = ?",
-    [korime],
-    (err, results) => {
-      if (err) {
-        console.error("Greška pri provjeri korisničkog imena:", err);
-        return response.json({
-          success: false,
-          message: "Došlo je do pogreške pri provjeri korisničkog imena.",
-        });
-      }
-
-      if (results.length > 0) {
-        // Ako korisničko ime već postoji
-        console.log("Korisničko ime već postoji.");
-        return response.json({
-          success: false,
-          message: "Korisničko ime je već registrirano!",
-        });
-      }
-
-      // Unos novog korisnika u bazu (bez šifriranja lozinke)
-      const query =
-        "INSERT INTO korisnik (ime, prezime, korime, lozinka) VALUES (?, ?, ?, ?)";
-      connection.query(
-        query,
-        [ime, prezime, korime, lozinka],
-        (err, results) => {
-          if (err) {
-            console.error("Greška pri unosu korisnika:", err);
-            return response.json({
-              success: false,
-              message: "Došlo je do pogreške pri unosu korisnika.",
-            });
-          }
-
-          console.log("Korisnik uspješno registriran.");
-          response.json({
-            success: true,
-            message: "Korisnik uspješno registriran!",
-          });
-        }
-      );
-    }
-  );
+// Postavljanje veze s bazom podataka (Koristimo connection pool umjesto obične veze)
+const pool = mysql.createPool({
+  host: "student.veleri.hr",
+  user: "fgunja",
+  password: "11",
+  database: "fgunja",
+  waitForConnections: true,
+  connectionLimit: 10, // Ovdje možete promijeniti broj veza prema potrebama
+  queueLimit: 0,
 });
 
-// Ruta za dohvaćanje knjiga
-app.get("/api/knjige", (request, response) => {
-  connection.query("SELECT * FROM knjiga", (error, results) => {
-    if (error) throw error;
+// Dohvaćanje svih knjiga
+app.get("/api/knjige", (req, res) => {
+  pool.query("SELECT * FROM knjiga", (error, results) => {
+    if (error) {
+      console.error("Error fetching books:", error);
+      res.status(500).send("Error fetching books");
+      return;
+    }
 
-    // Ako su slike BLOB podaci, pretvorimo ih u Base64
-    results.forEach((book) => {
+    // Convert the BLOB images to Base64 strings
+    const booksWithImages = results.map((book) => {
       if (book.slika) {
-        const base64Image = Buffer.from(book.slika).toString("base64");
-        book.slika = `data:image/jpeg;base64,${base64Image}`; // Pretpostavljamo da je slika JPEG
+        // Convert the BLOB data into a Base64 string
+        book.slika = Buffer.from(book.slika).toString("base64");
       }
+      return book;
     });
 
-    response.send(results);
+    // Send the book data as a JSON response
+    res.json(booksWithImages);
   });
 });
 
-// Ruta za rezervaciju knjige (nije zaštićena)
-app.post("/api/rezerv_knjige", (req, res) => {
-  const { datum, id_knjiga } = req.body;
+// Dohvaćanje jedne knjige prema ID-u
+app.get("/api/knjige/:id", (req, res) => {
+  const id = req.params.id;
+  pool.query("SELECT * FROM knjiga WHERE id = ?", [id], (error, results) => {
+    if (error) {
+      console.error("Error fetching book:", error);
+      res.status(500).send("Error fetching book");
+      return;
+    }
+    if (results.length === 0) {
+      res.status(404).send("Book not found");
+      return;
+    }
+    res.json(results[0]);
+  });
+});
 
-  if (!datum || !id_knjiga) {
-    return res.status(400).json({ message: "Svi podaci su obavezni." });
+// Dodavanje rezervacije za knjigu
+app.post("/api/rezerv_knjige", (req, res) => {
+  const { datum, id_knjiga, id_korisnik } = req.body;
+
+  if (!datum || !id_knjiga || !id_korisnik) {
+    res.status(400).send("Missing required fields");
+    return;
   }
 
-  const rezervacija = [[datum, id_knjiga]];
-
-  connection.query(
-    "INSERT INTO rezervacija (datum_rez, knjiga) VALUES ?",
+  const rezervacija = [[datum, id_knjiga, id_korisnik]];
+  pool.query(
+    "INSERT INTO rezervacija (datum_rez, knjiga, korisnik) VALUES ?",
     [rezervacija],
     (error, results) => {
       if (error) {
-        console.error("Greška prilikom dodavanja rezervacije:", error);
-        return res.status(500).json({ message: "Došlo je do greške." });
+        console.error("Error creating reservation:", error);
+        res.status(500).send("Error creating reservation");
+        return;
       }
-
-      res.json({
-        message: "Rezervacija uspješno dodana!",
-        reservationId: results.insertId,
-      });
+      res
+        .status(201)
+        .send({ message: "Reservation created", id: results.insertId });
     }
   );
 });
 
-// Provjera korisničkog imena (check-korime)
-app.post("/api/check-korime", (req, res) => {
-  const { korime } = req.body;
-
-  // Provjera postoji li korisničko ime u bazi podataka
-  connection.query(
-    "SELECT * FROM korisnik WHERE korime = ?",
-    [korime],
-    (err, results) => {
-      if (err) {
-        return res.status(500).json({
-          success: false,
-          message: "Greška u provjeri korisničkog imena.",
-        });
-      }
-
-      // Ako korisničko ime postoji, šaljemo odgovor
-      if (results.length > 0) {
-        return res.json({ exists: true }); // Ako korisnik već postoji
-      } else {
-        return res.json({ exists: false }); // Ako korisnik ne postoji
-      }
-    }
-  );
-});
-
-// Startanje servera
+// Pokretanje servera
 app.listen(port, () => {
-  console.log(`Server running at port: ${port}`);
+  console.log(`Server running at http://localhost:${port}`);
 });
