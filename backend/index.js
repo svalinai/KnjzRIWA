@@ -24,6 +24,12 @@ const pool = mysql.createPool({
   queueLimit: 0,
 });
 
+// Handler za kada se dogodi greška u vezi s bazom
+pool.on("error", (err) => {
+  console.error("Database connection error:", err);
+  // Ovdje možete implementirati ponovni pokušaj ili obavijestiti administratore
+});
+
 // Dohvaćanje svih knjiga
 app.get("/api/knjige", (req, res) => {
   pool.query("SELECT * FROM knjiga", (error, results) => {
@@ -65,29 +71,33 @@ app.get("/api/knjige/:id", (req, res) => {
 });
 
 // Dodavanje rezervacije za knjigu
-app.post("/api/rezerv_knjige", (req, res) => {
-  const { datum, id_knjiga, id_korisnik } = req.body;
 
-  if (!datum || !id_knjiga || !id_korisnik) {
-    res.status(400).send("Missing required fields");
-    return;
-  }
+app.get("/api/rezervirane_knjige", (req, res) => {
+  const query = `
+    SELECT 
+        r.id AS rezervacija_id,
+        r.datum_rez AS datum_rezervacije,
+        k.naslov AS naslov_knjige,
+        k.autor AS autor_knjige,
+        k.opis AS opis_knjige,
+        k.stanje AS stanje_knjige,
+        kor.ime AS ime_korisnika,
+        kor.prezime AS prezime_korisnika,
+        kor.korime AS korisnicko_ime
+    FROM rezervacija r
+    JOIN knjiga k ON r.knjiga = k.id
+    JOIN korisnik kor ON r.korisnik = kor.id;
+  `;
 
-  const rezervacija = [[datum, id_knjiga, id_korisnik]];
-  pool.query(
-    "INSERT INTO rezervacija (datum_rez, knjiga, korisnik) VALUES ?",
-    [rezervacija],
-    (error, results) => {
-      if (error) {
-        console.error("Error creating reservation:", error);
-        res.status(500).send("Error creating reservation");
-        return;
-      }
-      res
-        .status(201)
-        .send({ message: "Reservation created", id: results.insertId });
+  // Koristi pool.query za izvršavanje upita
+  pool.query(query, (err, results) => {
+    if (err) {
+      console.error("Greška pri dohvaćanju podataka:", err);
+      res.status(500).send("Greška pri dohvaćanju podataka");
+      return;
     }
-  );
+    res.json(results); // Vraća sve rezervacije s podacima o knjigama i korisnicima
+  });
 });
 
 // Pokretanje servera
